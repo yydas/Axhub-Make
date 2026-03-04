@@ -9,6 +9,7 @@ lerna-debug.log*
 # Build outputs
 dist/
 tests/
+vite-plugins/**/*.test.ts
 *.tsbuildinfo
 
 # Vite
@@ -23,11 +24,12 @@ vite.config.*.timestamp-*
 .env.development
 
 # Local configuration
-axhub.config.json
+.axhub/make/axhub.config.json
 components.json
-entries.json
+.axhub/make/entries.json
 
 # Dev server info (for AI debugging)
+.axhub/make/.dev-server-info.json
 .dev-server-info.json
 
 # IDE and editors

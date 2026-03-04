@@ -13,8 +13,8 @@ type ProjectInfo = {
   description?: string | null;
 };
 
-type LegacyPromptClient = 'claude' | 'cursor' | 'codex';
-type GeniePromptClient = 'genie:claude' | 'genie:cursor' | 'genie:codex';
+type LegacyPromptClient = 'claude' | 'cursor' | 'codex' | 'gemini' | 'opencode';
+type GeniePromptClient = 'genie:claude' | 'genie:cursor' | 'genie:codex' | 'genie:gemini' | 'genie:opencode';
 type LocalPromptClient = 'local:cursor' | 'local:qoder';
 type PromptClient = GeniePromptClient | LocalPromptClient;
 type MainIDE = 'cursor' | 'trae' | 'vscode' | 'trae_cn' | 'windsurf' | 'kiro' | 'qoder' | 'antigravity';
@@ -135,7 +135,8 @@ const DEFAULT_ASSISTANT_HEALTH_URL = `${DEFAULT_ASSISTANT_WEB_BASE_URL}/health`;
 const ASSISTANT_SERVICE_ID = '@axhub/genie';
 const ASSISTANT_SERVICE_NAME = 'Axhub Genie';
 const ASSISTANT_RUNTIME_LOG_PREFIX = '[assistant-runtime]';
-const CLOUDCLI_STATUS_TIMEOUT_MS = 2_000;
+const ASSISTANT_STATUS_TIMEOUT_MS = 8_000;
+const COMMAND_AVAILABILITY_TIMEOUT_MS = 2_000;
 
 function logAssistantRuntime(level: 'info' | 'warn' | 'error', message: string, meta?: Record<string, unknown>) {
   const payload = meta ? `${ASSISTANT_RUNTIME_LOG_PREFIX} ${message}` : `${ASSISTANT_RUNTIME_LOG_PREFIX} ${message}`;
@@ -215,11 +216,19 @@ function normalizePromptClient(value: unknown): PromptClient | null {
   if (typeof value !== 'string') return null;
 
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'genie:claude' || normalized === 'genie:cursor' || normalized === 'genie:codex') return normalized;
+  if (
+    normalized === 'genie:claude'
+    || normalized === 'genie:cursor'
+    || normalized === 'genie:codex'
+    || normalized === 'genie:gemini'
+    || normalized === 'genie:opencode'
+  ) return normalized;
   if (normalized === 'local:cursor' || normalized === 'local:qoder') return normalized;
   if (normalized === 'claude') return 'genie:claude';
   if (normalized === 'cursor') return 'genie:cursor';
   if (normalized === 'codex') return 'genie:codex';
+  if (normalized === 'gemini') return 'genie:gemini';
+  if (normalized === 'opencode') return 'genie:opencode';
 
   return null;
 }
@@ -227,7 +236,13 @@ function normalizePromptClient(value: unknown): PromptClient | null {
 function normalizeExecutePromptClient(value: unknown): LegacyPromptClient | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
-  if (normalized === 'claude' || normalized === 'cursor' || normalized === 'codex') {
+  if (
+    normalized === 'claude'
+    || normalized === 'cursor'
+    || normalized === 'codex'
+    || normalized === 'gemini'
+    || normalized === 'opencode'
+  ) {
     return normalized;
   }
   return null;
@@ -400,7 +415,7 @@ function readAssistantStatusFromCli(command: 'axhub-genie' | 'cloudcli', args: s
   try {
     const execution = spawnSyncFirstAvailable(command, args, {
       encoding: 'utf8',
-      timeout: CLOUDCLI_STATUS_TIMEOUT_MS,
+      timeout: ASSISTANT_STATUS_TIMEOUT_MS,
     });
 
     if (!execution) {
@@ -415,7 +430,8 @@ function readAssistantStatusFromCli(command: 'axhub-genie' | 'cloudcli', args: s
     const result = execution.result;
 
     if (result.error) {
-      const errCode = (result.error as NodeJS.ErrnoException).code;
+      const error = result.error as NodeJS.ErrnoException;
+      const errCode = error.code;
       if (errCode === 'ENOENT') {
         return {
           status: 'missing_cli',
@@ -425,9 +441,18 @@ function readAssistantStatusFromCli(command: 'axhub-genie' | 'cloudcli', args: s
         };
       }
 
+      if (errCode === 'ETIMEDOUT' || /timed?\s*out/i.test(error.message || '')) {
+        return {
+          status: 'not_running',
+          message: `${command} status 执行超时（>${ASSISTANT_STATUS_TIMEOUT_MS}ms），请确认服务已启动后重试`,
+          commandSource,
+          config: null,
+        };
+      }
+
       return {
         status: 'cli_error',
-        message: `${command} 执行失败: ${(result.error as Error).message || 'unknown error'}`,
+        message: `${command} 执行失败: ${error.message || 'unknown error'}`,
         commandSource,
         config: null,
       };
@@ -899,7 +924,7 @@ function isCommandAvailable(command: string, args: string[] = ['--version']): bo
   try {
     const execution = spawnSyncFirstAvailable(command, args, {
       encoding: 'utf8',
-      timeout: CLOUDCLI_STATUS_TIMEOUT_MS,
+      timeout: COMMAND_AVAILABILITY_TIMEOUT_MS,
     });
 
     if (!execution) {
@@ -1129,7 +1154,10 @@ function resolveWindowsExecutablePath(candidates: string[]): string | null {
       if (fs.existsSync(inferredExePath)) {
         return inferredExePath;
       }
+      return commandWrapper;
     }
+
+    return lines[0] || null;
   }
 
   return null;
@@ -1188,7 +1216,7 @@ function buildProjectInfoSection(projectInfo: ProjectInfo, projectDefaults: Proj
 
   if (projectName) lines.push(`- 项目名称：${projectName}`);
   if (projectDescription) lines.push(`- 项目简介：${projectDescription}`);
-  if (defaultDoc) lines.push(`- 项目总文档：\`assets/docs/${defaultDoc}\``);
+  if (defaultDoc) lines.push(`- 项目总文档：\`src/docs/${defaultDoc}\``);
   if (defaultTheme) lines.push(`- 默认主题：\`src/themes/${defaultTheme}\``);
 
   if (!lines.length) return '';
@@ -1247,7 +1275,7 @@ function syncAgentDocsFromConfig(paths: AgentDocsPaths): void {
  */
 export function configApiPlugin(): Plugin {
   const projectRoot = path.resolve(__dirname, '..');
-  const configPath = path.resolve(projectRoot, 'axhub.config.json');
+  const configPath = path.resolve(projectRoot, '.axhub', 'make', 'axhub.config.json');
   const agentsPath = path.resolve(projectRoot, 'AGENTS.md');
   const claudePath = path.resolve(projectRoot, 'CLAUDE.md');
   const agentsTemplatePath = path.resolve(projectRoot, 'AGENTS.template.md');
@@ -1441,6 +1469,7 @@ export function configApiPlugin(): Plugin {
               }
 
               // 保存配置文件
+              fs.mkdirSync(path.dirname(configPath), { recursive: true });
               fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2), 'utf8');
 
               res.statusCode = 200;
@@ -1541,7 +1570,13 @@ export function configApiPlugin(): Plugin {
                   || resolveWindowsExecutableFromRegistry(executableNameCandidates);
 
                 if (executablePath) {
-                  const child = spawn(executablePath, [absoluteTargetPath], {
+                  const useWindowsCmdWrapper = /\.(cmd|bat)$/i.test(executablePath);
+                  const spawnCommand = useWindowsCmdWrapper ? 'cmd.exe' : executablePath;
+                  const spawnArgs = useWindowsCmdWrapper
+                    ? ['/d', '/s', '/c', buildWindowsCommandLine(executablePath, [absoluteTargetPath])]
+                    : [absoluteTargetPath];
+
+                  const child = spawn(spawnCommand, spawnArgs, {
                     detached: true,
                     stdio: 'ignore',
                     windowsHide: true,

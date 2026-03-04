@@ -682,7 +682,7 @@ function handleMessage(
                   message: error.message || 'import failed'
                 });
               } else {
-                const outputDir = path.join(context.projectRoot, 'src', 'pages', outputName);
+                const outputDir = path.join(context.projectRoot, 'src', 'prototypes', outputName);
                 sendWsMessage(ws, {
                   type: 'chrome-export:done',
                   transferId,
@@ -732,7 +732,7 @@ function handleMessage(
                 message: error.message || 'import failed'
               });
             } else {
-              const outputDir = path.join(context.projectRoot, 'src', 'pages', outputName);
+              const outputDir = path.join(context.projectRoot, 'src', 'prototypes', outputName);
               sendWsMessage(ws, {
                 type: 'chrome-export:done',
                 transferId,
