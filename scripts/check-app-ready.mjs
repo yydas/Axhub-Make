@@ -557,7 +557,8 @@ async function scanEntries() {
  * 针对指定的入口 key 执行单独构建，不是全量构建
  */
 async function runBuildCheck(entryKey) {
-  logs.push(`Starting build check for entry: ${entryKey}`)
+  const originalEntryKey = String(entryKey ?? '').trim()
+  logs.push(`Starting build check for entry: ${originalEntryKey || '(auto)'}`)
   
   // 先扫描入口，确保 .axhub/make/entries.json 是最新的
   const scanResult = await scanEntries()
@@ -569,6 +570,17 @@ async function runBuildCheck(entryKey) {
       logs: []
     }
   }
+
+  const resolvedEntryKey = originalEntryKey || resolveDefaultEntryKey()
+  if (!resolvedEntryKey) {
+    logs.push('Build check skipped: no entry key resolved')
+    return {
+      status: 'SKIPPED',
+      message: 'Build check skipped: no entry key resolved',
+      errors: [],
+      logs: []
+    }
+  }
   
   return new Promise((resolve) => {
     const buildErrors = []
@@ -577,7 +589,7 @@ async function runBuildCheck(entryKey) {
     // 使用 ENTRY_KEY 环境变量触发单独构建
     const buildProcess = spawn('npx', ['vite', 'build'], {
       cwd: APP_ROOT,
-      env: { ...process.env, ENTRY_KEY: entryKey },
+      env: { ...process.env, ENTRY_KEY: resolvedEntryKey },
       stdio: ['ignore', 'pipe', 'pipe']
     })
     
@@ -603,18 +615,18 @@ async function runBuildCheck(entryKey) {
     
     buildProcess.on('close', (code) => {
       if (code === 0 && buildErrors.length === 0) {
-        logs.push(`Build check completed successfully for ${entryKey}`)
+        logs.push(`Build check completed successfully for ${resolvedEntryKey}`)
         resolve({
           status: 'SUCCESS',
-          message: `Build completed successfully for ${entryKey}`,
+          message: `Build completed successfully for ${resolvedEntryKey}`,
           errors: [],
           logs: buildLogs
         })
       } else {
-        logs.push(`Build check failed for ${entryKey} with exit code ${code}`)
+        logs.push(`Build check failed for ${resolvedEntryKey} with exit code ${code}`)
         resolve({
           status: 'FAILED',
-          message: `Build failed for ${entryKey} (exit code: ${code})`,
+          message: `Build failed for ${resolvedEntryKey} (exit code: ${code})`,
           errors: buildErrors.length > 0 ? buildErrors : [`Build process exited with code ${code}`],
           logs: buildLogs
         })
@@ -631,6 +643,29 @@ async function runBuildCheck(entryKey) {
       })
     })
   })
+}
+
+function resolveDefaultEntryKey() {
+  try {
+    const entriesPath = path.resolve(APP_ROOT, '.axhub/make/entries.json')
+    if (!fs.existsSync(entriesPath)) return null
+    const raw = JSON.parse(fs.readFileSync(entriesPath, 'utf8'))
+    const jsEntries = raw && typeof raw === 'object' ? (raw.js || {}) : {}
+    const keys = Object.keys(jsEntries || {}).filter(Boolean).sort((a, b) => a.localeCompare(b))
+    if (keys.length === 0) return null
+
+    const pickFromPrefix = (prefix) => keys.find((k) => k.startsWith(prefix))
+    return (
+      pickFromPrefix('prototypes/') ||
+      pickFromPrefix('components/') ||
+      pickFromPrefix('themes/') ||
+      keys[0] ||
+      null
+    )
+  } catch (err) {
+    logs.push(`Failed to resolve default entry key: ${err.message}`)
+    return null
+  }
 }
 
 /**
