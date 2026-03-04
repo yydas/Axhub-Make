@@ -2,7 +2,7 @@
 > Axhub Make 不是“又一个 AI 生成原型工具”。它是一条从 **需求** 到 **文档** 到 **原型** 再到 **交付（Axure / Figma / Html）** 的工作流。
 
 <div align="center">
-  <img alt="Axhub Make Preview" src="./admin/images/home.png" width="900" />
+  <img alt="Axhub Make Preview" src="./assets/media/home.png" width="900" />
 </div>
 
 # 跳过这个 README 吧

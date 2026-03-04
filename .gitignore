@@ -27,10 +27,11 @@ vite.config.*.timestamp-*
 .axhub/make/axhub.config.json
 components.json
 .axhub/make/entries.json
+.dev-server-info.json
+entries.json
 
 # Dev server info (for AI debugging)
 .axhub/make/.dev-server-info.json
-.dev-server-info.json
 
 # IDE and editors
 .idea/

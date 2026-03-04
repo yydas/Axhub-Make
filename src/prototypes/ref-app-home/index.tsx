@@ -6,31 +6,14 @@
  * - /rules/axure-api-guide.md
  * - /docs/设计规范.UIGuidelines.md
  * 
- * ==================== 重要说明 ====================
- * 本文件是演示文件，用于展示本项目页面开发规范
- * 文件中的详细注释【规范说明】仅用于教学和说明规范要求
- * 
- * 实际开发时：
- * 1. 只需保留 @name 和 参考资料 注释
- * 2. 不需要添加如此详细的规范说明注释
- * 3. 代码应该简洁清晰，避免冗余注释
- * 4. 只在复杂逻辑处添加必要的业务说明注释
- * ================================================
  */
 
-// 【规范说明】导入顺序：
-// 1. 样式文件（可选）
 import './style.css';
 
-// 2. React 和 Hooks（必需）
-// 直接从 'react' 导入所需的 Hooks，不使用解构
 import React, { useState, useCallback, useImperativeHandle, forwardRef } from 'react';
 
-// 3. 导入图标库
 import { Flame, Timer, Zap, Activity } from 'lucide-react';
 
-// 4. 导入类型定义（必需）
-// 从 axure-types 导入所有必要的类型
 import type {
     KeyDesc,
     DataDesc,
@@ -41,38 +24,28 @@ import type {
     AxureHandle
 } from '../../common/axure-types';
 
-// 【规范说明】事件列表定义
-// 必须清晰描述每个事件的触发时机和用途
 const EVENT_LIST: EventItem[] = [
     { name: 'onCourseClick', desc: '点击课程卡片时触发' },
     { name: 'onStartWorkout', desc: '点击开始训练时触发' },
     { name: 'onTabChange', desc: '切换底部标签栏时触发' }
 ];
 
-// 【规范说明】动作列表定义
-// 必须说明每个动作的功能，如果有参数需要说明参数格式
 const ACTION_LIST: Action[] = [
     { name: 'refreshData', desc: '刷新首页数据' },
     { name: 'updateProgress', desc: '更新今日目标进度，参数：{ progress: number }' }
 ];
 
-// 【规范说明】变量列表定义
-// 必须说明每个变量的类型和用途
 const VAR_LIST: KeyDesc[] = [
     { name: 'currentTab', desc: '当前选中的标签页索引' },
     { name: 'todayProgress', desc: '今日目标完成进度(0-100)' }
 ];
 
-// 【规范说明】配置项列表定义
-// 必须包含 initialValue，并清晰说明每个配置项的用途
 const CONFIG_LIST: ConfigItem[] = [
     { type: 'input', attributeId: 'userName', displayName: '用户名', info: '显示的用户名', initialValue: 'Alex' },
     { type: 'colorPicker', attributeId: 'accentColor', displayName: '强调色', info: 'App 的主要强调色', initialValue: '#a6ff00' },
     { type: 'inputNumber', attributeId: 'dailyGoal', displayName: '每日目标(kcal)', info: '每日卡路里消耗目标', initialValue: 500 }
 ];
 
-// 【规范说明】数据项列表定义
-// 必须详细定义 keys，说明每个字段的含义和类型
 const DATA_LIST: DataDesc[] = [
     {
         name: 'courses',
@@ -88,22 +61,17 @@ const DATA_LIST: DataDesc[] = [
     }
 ];
 
-// 【规范说明】组件定义
-// 必须使用 forwardRef<AxureHandle, AxureProps> 包装组件
 const Component = forwardRef<AxureHandle, AxureProps>(function FitnessHome(innerProps, ref) {
-    // 【规范说明】Props 处理
     // 安全解构 props 并提供默认值，避免访问 undefined 属性
     const dataSource = innerProps && innerProps.data ? innerProps.data : {};
     const configSource = innerProps && innerProps.config ? innerProps.config : {};
     const onEventHandler = typeof innerProps.onEvent === 'function' ? innerProps.onEvent : function () { return undefined; };
 
-    // 【规范说明】从 config 获取配置值
     // 使用类型检查避免使用 || 运算符（会误判 0、false 等值）
     const userName = typeof configSource.userName === 'string' && configSource.userName ? configSource.userName : 'Alex';
     const accentColor = typeof configSource.accentColor === 'string' && configSource.accentColor ? configSource.accentColor : '#a6ff00';
     const dailyGoal = typeof configSource.dailyGoal === 'number' ? configSource.dailyGoal : 500;
 
-    // 【规范说明】默认数据定义
     // 为演示提供合理的默认数据
     const defaultCourses = [
         { id: 1, title: 'HIIT 高强度燃脂', duration: 20, level: 'K3', category: '减脂', image: 'https://images.unsplash.com/photo-1517836357463-d25dfeac3438?ixlib=rb-1.2.1&auto=format&fit=crop&w=1350&q=80' },
@@ -112,7 +80,6 @@ const Component = forwardRef<AxureHandle, AxureProps>(function FitnessHome(inner
     ];
     const courses = Array.isArray(dataSource.courses) ? dataSource.courses : defaultCourses;
 
-    // 【规范说明】State 管理
     // 避免使用 ES6 解构，使用数组索引访问 state 和 setter
     const tabState = useState<number>(0);
     const currentTab = tabState[0];
@@ -122,7 +89,6 @@ const Component = forwardRef<AxureHandle, AxureProps>(function FitnessHome(inner
     const todayProgress = progressState[0];
     const setTodayProgress = progressState[1];
 
-    // 【规范说明】事件触发封装
     // 使用 useCallback 优化性能，包含错误处理
     const emitEvent = useCallback(function (eventName: string, payload?: any) {
         try {
@@ -145,7 +111,6 @@ const Component = forwardRef<AxureHandle, AxureProps>(function FitnessHome(inner
         emitEvent('onStartWorkout', {});
     }, [emitEvent]);
 
-    // 【规范说明】动作处理器
     // 使用 switch 语句处理不同的动作类型
     const fireActionHandler = useCallback(function (name: string, params?: any) {
         switch (name) {
@@ -163,9 +128,6 @@ const Component = forwardRef<AxureHandle, AxureProps>(function FitnessHome(inner
         }
     }, []);
 
-    // 【规范说明】useImperativeHandle
-    // 必须暴露完整的 AxureHandle 接口，包括所有列表和方法
-    // 依赖项数组必须包含所有使用到的 state 和函数
     useImperativeHandle(ref, function () {
         return {
             getVar: function (name: string) {
@@ -184,13 +146,11 @@ const Component = forwardRef<AxureHandle, AxureProps>(function FitnessHome(inner
         };
     }, [currentTab, todayProgress, fireActionHandler]);
 
-    // 【规范说明】渲染前的数据准备
     // 计算圆环进度条的 SVG 属性
     const radius = 25;
     const circumference = 2 * Math.PI * radius;
     const strokeDashoffset = circumference - (todayProgress / 100) * circumference;
 
-    // 【规范说明】JSX 渲染
     // 使用语义化的类名，添加组件前缀避免冲突
     // 避免在 JSX 中直接定义函数，使用预定义的 useCallback 函数
     return (
@@ -360,7 +320,5 @@ const Component = forwardRef<AxureHandle, AxureProps>(function FitnessHome(inner
     );
 });
 
-// 【规范说明】导出组件
-// 必须使用 export default Component（大小写敏感）
 // 这是本项目平台集成的必要条件
 export default Component;

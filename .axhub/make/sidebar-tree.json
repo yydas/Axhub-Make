@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-03-04T07:37:53.100Z",
+  "updatedAt": "2026-03-04T09:46:18.191Z",
   "prototypes": [
     {
       "id": "folder-1771647506379-zzmigx",
@@ -68,5 +68,7 @@
     "trae-design",
     "firecrawl"
   ],
-  "data": []
+  "data": [
+    "orders"
+  ]
 }
