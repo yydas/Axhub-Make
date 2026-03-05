@@ -2,9 +2,10 @@ import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 import fs from 'fs';
 import path from 'path';
-import { exec, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { networkInterfaces, tmpdir } from 'os';
 import formidable from 'formidable';
+import archiver from 'archiver';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { forceInlineDynamicImportsOff } from './vite-plugins/forceInlineDynamicImportsOff';
@@ -27,6 +28,7 @@ const MAKE_STATE_DIR = path.join('.axhub', 'make');
 const MAKE_CONFIG_RELATIVE_PATH = path.join(MAKE_STATE_DIR, 'axhub.config.json');
 const MAKE_DEV_SERVER_INFO_RELATIVE_PATH = path.join(MAKE_STATE_DIR, '.dev-server-info.json');
 const MAKE_ENTRIES_RELATIVE_PATH = path.join(MAKE_STATE_DIR, 'entries.json');
+const AXURE_BRIDGE_BASE_URL = 'http://localhost:32767';
 
 /**
  * ⚠️ 运行时配置注入说明
@@ -68,6 +70,31 @@ function getRequestPathname(req: any): string {
   } catch {
     return (req.url || '/').split('?')[0];
   }
+}
+
+function streamDirectoryAsZip(res: any, sourceDir: string, fileName: string) {
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+
+  const archive = archiver('zip', { zlib: { level: 9 } });
+
+  archive.on('warning', (warning: any) => {
+    console.warn('[download-dist-plugin] ZIP warning:', warning);
+  });
+
+  archive.on('error', (error: any) => {
+    console.error('[download-dist-plugin] ZIP error:', error);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.end(JSON.stringify({ error: `Failed to create zip: ${error.message}` }));
+      return;
+    }
+    res.destroy(error);
+  });
+
+  archive.pipe(res);
+  archive.directory(sourceDir, false);
+  void archive.finalize();
 }
 
 /**
@@ -442,36 +469,89 @@ function downloadDistPlugin(): Plugin {
             console.warn('Failed to read project name from package.json:', e);
           }
 
-          res.setHeader('Content-Type', 'application/zip');
-          res.setHeader('Content-Disposition', `attachment; filename="${projectName}-dist.zip"`);
-
-          // Use zip command (available on macOS/Linux)
-          const child = exec(`cd "${distDir}" && zip -r - .`, { maxBuffer: 1024 * 1024 * 50 });
-
-          if (child.stdout) {
-            child.stdout.pipe(res);
-          } else {
-            res.statusCode = 500;
-            res.end(JSON.stringify({ error: 'Failed to create zip stream' }));
-          }
-
-          child.stderr?.on('data', (data: any) => {
-            console.error(`zip stderr: ${data}`);
-          });
-
-          child.on('error', (error: any) => {
-            console.error('Download dist error:', error);
-            if (!res.headersSent) {
-              res.statusCode = 500;
-              res.end(JSON.stringify({ error: error.message }));
-            }
-          });
+          streamDirectoryAsZip(res, distDir, `${projectName}-dist.zip`);
         } catch (e: any) {
           console.error('Download dist error:', e);
           if (!res.headersSent) {
             res.statusCode = 500;
             res.end(JSON.stringify({ error: e.message }));
           }
+        }
+      });
+    }
+  };
+}
+
+// 提供 /api/axure-bridge/* 端点的插件（服务端转发到本地 Axure Bridge）
+function axureBridgeProxyPlugin(): Plugin {
+  return {
+    name: 'axure-bridge-proxy-plugin',
+    configureServer(server: any) {
+      server.middlewares.use(async (req: any, res: any, next: any) => {
+        const pathname = getRequestPathname(req);
+        const isAvailableRoute = req.method === 'GET' && pathname === '/api/axure-bridge/available';
+        const isCopyRoute = req.method === 'POST' && pathname === '/api/axure-bridge/copyaxvg';
+
+        if (!isAvailableRoute && !isCopyRoute) {
+          return next();
+        }
+
+        try {
+          let upstreamResponse: any;
+
+          if (isAvailableRoute) {
+            upstreamResponse = await fetch(`${AXURE_BRIDGE_BASE_URL}/available`, {
+              method: 'GET',
+            });
+          } else {
+            let body: any = {};
+            try {
+              body = await readJsonBody(req);
+            } catch (error: any) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(JSON.stringify({ error: error?.message || 'Invalid JSON body' }));
+              return;
+            }
+
+            upstreamResponse = await fetch(`${AXURE_BRIDGE_BASE_URL}/copyaxvg`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(body ?? {}),
+            });
+          }
+
+          const contentType = String(upstreamResponse.headers.get('content-type') || '').toLowerCase();
+          const responseText = await upstreamResponse.text();
+
+          res.statusCode = upstreamResponse.status;
+          res.setHeader('Cache-Control', 'no-store');
+
+          if (contentType.includes('application/json')) {
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.end(responseText || '{}');
+            return;
+          }
+
+          if (responseText) {
+            try {
+              const parsed = JSON.parse(responseText);
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(JSON.stringify(parsed));
+              return;
+            } catch {
+              // 非 JSON 文本按原样透传
+            }
+          }
+
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          res.end(responseText);
+        } catch (error: any) {
+          res.statusCode = 502;
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.end(JSON.stringify({ error: error?.message || 'Axure Bridge unavailable' }));
         }
       });
     }
@@ -2399,6 +2479,7 @@ const config: any = {
     lanAccessControlPlugin(), // 局域网访问控制（必须在最前面）
     writeDevServerInfoPlugin(), // 写入开发服务器信息
     serveAdminPlugin(), // 服务 admin 目录（需要在最前面）
+    axureBridgeProxyPlugin(), // 提供 /api/axure-bridge/* 端点
     injectStablePageIds(), // 注入稳定 ID（所有模式都启用）
     virtualHtmlPlugin(),
     websocketPlugin(),

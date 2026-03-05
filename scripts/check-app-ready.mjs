@@ -44,6 +44,7 @@ import process from 'node:process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { decodeOutput, getPreferredNpmCommand, getPreferredNpxCommand } from './utils/command-runtime.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -56,7 +57,7 @@ const skipBuild = args.includes('--skip-build');
 const pagePath = args.find(arg => !arg.startsWith('--')) || '/';
 
 const CONFIG = {
-  devCommand: 'npm run dev',        // 启动 Vite 的命令
+  devCommand: ['run', 'dev'],       // 启动 Vite 的命令参数
   devServerInfoPath: path.resolve(__dirname, '../.axhub/make/.dev-server-info.json'), // 开发服务器信息文件
   pagePath,                         // 目标页面路径（从命令行参数获取）
   pollIntervalMs: 500,              // 页面轮询间隔
@@ -179,14 +180,15 @@ let errorCache = new Set() // 用于去重错误信息
 /* ================= 阶段 1：启动或 attach Vite ================= */
 function startOrAttachVite() {
   logs.push('Checking Vite server...')
-  const child = spawn(CONFIG.devCommand, {
-    shell: true,
+  const npmCommand = getPreferredNpmCommand()
+  const child = spawn(npmCommand, CONFIG.devCommand, {
     stdio: ['ignore', 'pipe', 'pipe'],
-    cwd: APP_ROOT
+    cwd: APP_ROOT,
+    shell: false,
   })
 
   child.stdout.on('data', (data) => {
-    const text = data.toString().trim()
+    const text = decodeOutput(data).trim()
     if (text) logs.push(text)
     
     // 检测构建错误
@@ -197,7 +199,7 @@ function startOrAttachVite() {
   })
 
   child.stderr.on('data', (data) => {
-    const text = data.toString().trim()
+    const text = decodeOutput(data).trim()
     if (text) {
       // 过滤掉一些正常的警告信息
       if (!/deprecated|experimental/i.test(text)) {
@@ -397,8 +399,13 @@ async function runCommandCheck({ label, command, args = [], env = {}, logTag }) 
   return new Promise((resolve) => {
     const checkErrors = []
     const checkLogs = []
+    const resolvedCommand = command === 'npm'
+      ? getPreferredNpmCommand()
+      : command === 'npx'
+        ? getPreferredNpxCommand()
+        : command
 
-    const proc = spawn(command, args, {
+    const proc = spawn(resolvedCommand, args, {
       cwd: APP_ROOT,
       env: { ...process.env, ...env },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -414,11 +421,11 @@ async function runCommandCheck({ label, command, args = [], env = {}, logTag }) 
     }
 
     proc.stdout.on('data', (data) => {
-      appendLog(data.toString().trim(), false)
+      appendLog(decodeOutput(data).trim(), false)
     })
 
     proc.stderr.on('data', (data) => {
-      appendLog(data.toString().trim(), true)
+      appendLog(decodeOutput(data).trim(), true)
     })
 
     proc.on('close', (code) => {
@@ -526,12 +533,12 @@ async function scanEntries() {
     })
     
     scanProcess.stdout.on('data', (data) => {
-      const text = data.toString().trim()
+      const text = decodeOutput(data).trim()
       if (text) logs.push(`[SCAN] ${text}`)
     })
-    
+
     scanProcess.stderr.on('data', (data) => {
-      const text = data.toString().trim()
+      const text = decodeOutput(data).trim()
       if (text) logs.push(`[SCAN ERROR] ${text}`)
     })
     
@@ -585,16 +592,17 @@ async function runBuildCheck(entryKey) {
   return new Promise((resolve) => {
     const buildErrors = []
     const buildLogs = []
+    const npxCommand = getPreferredNpxCommand()
     
     // 使用 ENTRY_KEY 环境变量触发单独构建
-    const buildProcess = spawn('npx', ['vite', 'build'], {
+    const buildProcess = spawn(npxCommand, ['vite', 'build'], {
       cwd: APP_ROOT,
       env: { ...process.env, ENTRY_KEY: resolvedEntryKey },
       stdio: ['ignore', 'pipe', 'pipe']
     })
     
     buildProcess.stdout.on('data', (data) => {
-      const text = data.toString().trim()
+      const text = decodeOutput(data).trim()
       if (text) {
         buildLogs.push(text)
         logs.push(`[BUILD] ${text}`)
@@ -602,7 +610,7 @@ async function runBuildCheck(entryKey) {
     })
     
     buildProcess.stderr.on('data', (data) => {
-      const text = data.toString().trim()
+      const text = decodeOutput(data).trim()
       if (text) {
         buildLogs.push(text)
         logs.push(`[BUILD ERROR] ${text}`)

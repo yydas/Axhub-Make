@@ -5,9 +5,9 @@ import { IncomingMessage } from 'http';
 import formidable from 'formidable';
 import extractZip from 'extract-zip';
 import archiver from 'archiver';
-import { exec, execSync } from 'child_process';
 import { allowedItemKeysByTab, scanEntries, type SidebarTreeTab } from './utils/entryScanner';
 import { createSidebarTreeStore, type SidebarTreeNode, type ResourceOrderType } from './utils/sidebarTreeStore';
+import { runCommand, runCommandSync } from '../scripts/utils/command-runtime.mjs';
 
 /**
  * 递归复制目录（用于 Windows 权限问题的备用方案）
@@ -1130,13 +1130,21 @@ export function fileSystemApiPlugin(): Plugin {
                 }
                 try {
                   const scriptPath = path.join(projectRoot, 'scripts', 'local-axure-extract.mjs');
-                  const command = `node "${scriptPath}" "${tempFilePath}" "${originalFilename}"`;
-
-                  const rawOutput = execSync(command, {
+                  const commandResult = runCommandSync({
+                    command: 'node',
+                    args: [scriptPath, tempFilePath, originalFilename],
                     cwd: projectRoot,
-                    encoding: 'utf8',
-                    stdio: 'pipe'
-                  }).trim();
+                  });
+
+                  if (commandResult.status !== 0) {
+                    const details = [commandResult.stderr, commandResult.stdout]
+                      .filter(Boolean)
+                      .join('\n')
+                      .trim();
+                    throw new Error(details || 'local-axure-extract failed');
+                  }
+
+                  const rawOutput = commandResult.stdout.trim();
 
                   const lastLine = rawOutput.split('\n').filter(Boolean).slice(-1)[0] || rawOutput;
                   const extracted = JSON.parse(lastLine) as { extractDir: string; contentDir?: string };
@@ -1318,28 +1326,38 @@ export function fileSystemApiPlugin(): Plugin {
                   if (uploadType === 'axhub') {
                     // Chrome 扩展：执行转换脚本
                     const scriptPath = path.join(projectRoot, 'scripts', 'chrome-export-converter.mjs');
-                    const command = `node "${scriptPath}" "${targetDir}" "${targetFolderName}"`;
-                    
-                    exec(command, (error: any, stdout: any, stderr: any) => {
-                      if (error) {
-                        console.error('[Chrome 转换] 执行失败:', error);
+                    void runCommand({
+                      command: 'node',
+                      args: [scriptPath, targetDir, targetFolderName],
+                      cwd: projectRoot,
+                      capture: true,
+                    }).then((result) => {
+                      if (result.code !== 0) {
+                        console.error('[Chrome 转换] 执行失败:', result.stderr || result.stdout || `exit=${result.code}`);
                       } else {
-                        console.log('[Chrome 转换] 完成:', stdout);
+                        console.log('[Chrome 转换] 完成:', result.stdout);
                       }
-                      if (stderr) console.error('[Chrome 转换] 错误:', stderr);
+                      if (result.stderr) console.error('[Chrome 转换] 错误:', result.stderr);
+                    }).catch((error: any) => {
+                      console.error('[Chrome 转换] 执行失败:', error);
                     });
                   } else if (uploadType === 'google_stitch') {
                     // Stitch：执行转换脚本
                     const scriptPath = path.join(projectRoot, 'scripts', 'stitch-converter.mjs');
-                    const command = `node "${scriptPath}" "${targetDir}" "${targetFolderName}"`;
-                    
-                    exec(command, (error: any, stdout: any, stderr: any) => {
-                      if (error) {
-                        console.error('[Stitch 转换] 执行失败:', error);
+                    void runCommand({
+                      command: 'node',
+                      args: [scriptPath, targetDir, targetFolderName],
+                      cwd: projectRoot,
+                      capture: true,
+                    }).then((result) => {
+                      if (result.code !== 0) {
+                        console.error('[Stitch 转换] 执行失败:', result.stderr || result.stdout || `exit=${result.code}`);
                       } else {
-                        console.log('[Stitch 转换] 完成:', stdout);
+                        console.log('[Stitch 转换] 完成:', result.stdout);
                       }
-                      if (stderr) console.error('[Stitch 转换] 错误:', stderr);
+                      if (result.stderr) console.error('[Stitch 转换] 错误:', result.stderr);
+                    }).catch((error: any) => {
+                      console.error('[Stitch 转换] 执行失败:', error);
                     });
                   }
 
@@ -1394,17 +1412,22 @@ export function fileSystemApiPlugin(): Plugin {
                   if (uploadType === 'v0') {
                     const scriptPath = path.join(projectRoot, 'scripts', 'v0-converter.mjs');
                     const tasksFileName = isThemeTarget ? '.v0-theme-tasks.md' : '.v0-tasks.md';
-                    const command = `node "${scriptPath}" "${extractDir}" "${pageName}" --target-type "${targetType}"`;
+                    const commandArgs = [scriptPath, extractDir, pageName, '--target-type', String(targetType)];
                     
-                    console.log('[V0 转换] 执行预处理脚本:', command);
+                    console.log('[V0 转换] 执行预处理脚本:', `node ${commandArgs.join(' ')}`);
                     
-                    // 使用 execSync 同步执行，等待完成
+                    // 同步执行，等待完成
                     try {
-                      const output = execSync(command, {
+                      const commandResult = runCommandSync({
+                        command: 'node',
+                        args: commandArgs,
                         cwd: projectRoot,
-                        encoding: 'utf8',
-                        stdio: 'pipe'
                       });
+
+                      if (commandResult.status !== 0) {
+                        throw new Error(commandResult.stderr || commandResult.stdout || `exit=${commandResult.status}`);
+                      }
+                      const output = commandResult.stdout;
                       
                       console.log('[V0 转换] 执行成功:', output);
                       
@@ -1450,17 +1473,21 @@ export function fileSystemApiPlugin(): Plugin {
                   if (uploadType === 'google_aistudio') {
                     const scriptPath = path.join(projectRoot, 'scripts', 'ai-studio-converter.mjs');
                     const tasksFileName = isThemeTarget ? '.ai-studio-theme-tasks.md' : '.ai-studio-tasks.md';
-                    const command = `node "${scriptPath}" "${extractDir}" "${pageName}" --target-type "${targetType}"`;
+                    const commandArgs = [scriptPath, extractDir, pageName, '--target-type', String(targetType)];
                     
-                    console.log('[AI Studio 转换] 执行预处理脚本:', command);
+                    console.log('[AI Studio 转换] 执行预处理脚本:', `node ${commandArgs.join(' ')}`);
                     
-                    // 使用 execSync 同步执行，等待完成
+                    // 同步执行，等待完成
                     try {
-                      const output = execSync(command, {
+                      const commandResult = runCommandSync({
+                        command: 'node',
+                        args: commandArgs,
                         cwd: projectRoot,
-                        encoding: 'utf8',
-                        stdio: 'pipe'
                       });
+                      if (commandResult.status !== 0) {
+                        throw new Error(commandResult.stderr || commandResult.stdout || `exit=${commandResult.status}`);
+                      }
+                      const output = commandResult.stdout;
                       
                       console.log('[AI Studio 转换] 执行成功:', output);
                       
@@ -1688,8 +1715,18 @@ ${filePaths.map(p => `- \`${p}\``).join('\n')}
             return sendJSON(res, 404, { error: 'Directory not found' });
           }
 
+          const probe = url.searchParams.get('probe') === '1';
+          const fileName = `${path.basename(targetPath)}.zip`;
+          if (probe) {
+            return sendJSON(res, 200, {
+              ok: true,
+              fileName,
+              path: targetPath,
+            });
+          }
+
           res.setHeader('Content-Type', 'application/zip');
-          res.setHeader('Content-Disposition', `attachment; filename="${path.basename(targetPath)}.zip"`);
+          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
 
           // 使用 streaming 方式创建 ZIP（避免在内存中构建整个 zip buffer）
           try {

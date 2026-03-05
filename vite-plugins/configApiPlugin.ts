@@ -2,6 +2,14 @@ import type { Plugin } from 'vite';
 import fs from 'fs';
 import path from 'path';
 import { exec, execFile, spawn, spawnSync } from 'node:child_process';
+import {
+  commandExists,
+  decodeOutput,
+  getPreferredNpmCommand,
+  getSpawnCommandSpec,
+  runCommand,
+  runCommandSync,
+} from '../scripts/utils/command-runtime.mjs';
 
 type ProjectDefaults = {
   defaultDoc?: string | null;
@@ -349,76 +357,17 @@ function containsNotRunningHint(text: string): boolean {
   return /(not\s*running|service\s*not\s*running|not\s*started|未启动|尚未启动|未运行|服务未运行)/i.test(normalized);
 }
 
-function getCommandCandidates(command: string): string[] {
-  if (process.platform !== 'win32') {
-    return [command];
-  }
-
-  if (/\.(cmd|exe|bat)$/i.test(command)) {
-    return [command];
-  }
-
-  return [command, `${command}.cmd`, `${command}.exe`, `${command}.bat`];
-}
-
-function quoteForCmdExec(value: string): string {
-  if (!value) return '""';
-  if (!/[\s"&^|<>]/.test(value)) return value;
-  const escaped = value
-    .replace(/(\\*)"/g, '$1$1\\"')
-    .replace(/(\\+)$/g, '$1$1');
-  return `"${escaped}"`;
-}
-
-function buildWindowsCommandLine(command: string, args: string[]): string {
-  const parts = [command, ...args].map((part) => quoteForCmdExec(String(part)));
-  return parts.join(' ');
-}
-
-function spawnSyncCommand(command: string, args: string[], options?: Parameters<typeof spawnSync>[2]) {
-  if (process.platform !== 'win32') {
-    return spawnSync(command, args, options);
-  }
-
-  const useCmdWrapper = !/\.exe$/i.test(command);
-  if (!useCmdWrapper) {
-    return spawnSync(command, args, options);
-  }
-
-  const commandLine = buildWindowsCommandLine(command, args);
-  return spawnSync('cmd.exe', ['/d', '/s', '/c', commandLine], {
-    ...options,
-    windowsHide: true,
-  });
-}
-
-function spawnSyncFirstAvailable(command: string, args: string[], options?: Parameters<typeof spawnSync>[2]) {
-  for (const candidate of getCommandCandidates(command)) {
-    const result = spawnSyncCommand(candidate, args, options);
-    const errCode = (result.error as NodeJS.ErrnoException | undefined)?.code;
-    if (errCode === 'ENOENT' || errCode === 'EINVAL') {
-      continue;
-    }
-
-    return {
-      command: candidate,
-      result,
-    };
-  }
-
-  return null;
+function containsMissingCommandHint(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  return /(not\s+recognized\s+as\s+an?\s+internal|command\s+not\s+found|no\s+such\s+file|未找到|不是内部或外部命令)/i.test(normalized);
 }
 
 function readAssistantStatusFromCli(command: 'axhub-genie' | 'cloudcli', args: string[]): AssistantProbeResult {
   const commandSource: Exclude<AssistantCommandSource, 'default'> = command === 'axhub-genie' ? 'axhub-genie' : 'cloudcli';
 
   try {
-    const execution = spawnSyncFirstAvailable(command, args, {
-      encoding: 'utf8',
-      timeout: ASSISTANT_STATUS_TIMEOUT_MS,
-    });
-
-    if (!execution) {
+    if (!commandExists(command)) {
       return {
         status: 'missing_cli',
         message: `未检测到 ${command} 命令`,
@@ -427,7 +376,11 @@ function readAssistantStatusFromCli(command: 'axhub-genie' | 'cloudcli', args: s
       };
     }
 
-    const result = execution.result;
+    const result = runCommandSync({
+      command,
+      args,
+      timeoutMs: ASSISTANT_STATUS_TIMEOUT_MS,
+    });
 
     if (result.error) {
       const error = result.error as NodeJS.ErrnoException;
@@ -461,6 +414,15 @@ function readAssistantStatusFromCli(command: 'axhub-genie' | 'cloudcli', args: s
     const stdout = typeof result.stdout === 'string' ? result.stdout.trim() : '';
     const stderr = typeof result.stderr === 'string' ? result.stderr.trim() : '';
     const mergedOutput = [stdout, stderr].filter(Boolean).join('\n');
+
+    if (containsMissingCommandHint(mergedOutput)) {
+      return {
+        status: 'missing_cli',
+        message: `未检测到 ${command} 命令`,
+        commandSource,
+        config: null,
+      };
+    }
 
     if (result.status !== 0) {
       if (command === 'axhub-genie' && containsNeedsUpdateHint(mergedOutput)) {
@@ -568,27 +530,23 @@ function sleep(ms: number) {
 
 function runExecutableCommandInBackground(command: string, args: string[], cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const isWindows = process.platform === 'win32';
-    const useWindowsCmdWrapper = isWindows && !/\.exe$/i.test(command);
-    const spawnCommand = useWindowsCmdWrapper ? 'cmd.exe' : command;
-    const spawnArgs = useWindowsCmdWrapper
-      ? ['/d', '/s', '/c', buildWindowsCommandLine(command, args)]
-      : args;
+    const spawnSpec = getSpawnCommandSpec(command, args, process.platform);
 
     logAssistantRuntime('info', '后台执行可执行命令', {
       command,
       args,
-      spawnCommand,
-      spawnArgs,
+      spawnCommand: spawnSpec.command,
+      spawnArgs: spawnSpec.args,
       cwd,
       platform: process.platform,
     });
 
-    const child = spawn(spawnCommand, spawnArgs, {
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
       cwd,
       detached: true,
       stdio: ['ignore', 'ignore', 'pipe'],
-      windowsHide: process.platform === 'win32',
+      windowsHide: spawnSpec.windowsHide,
+      shell: false,
     });
 
     if (typeof (child as any)?.once !== 'function') {
@@ -601,12 +559,12 @@ function runExecutableCommandInBackground(command: string, args: string[], cwd: 
 
     let settled = false;
     let stderrText = '';
-    if (child.stderr && typeof (child.stderr as any).setEncoding === 'function' && typeof (child.stderr as any).on === 'function') {
-      (child.stderr as any).setEncoding('utf8');
-      (child.stderr as any).on('data', (chunk: string) => {
-        if (typeof chunk !== 'string') return;
+    if (child.stderr && typeof (child.stderr as any).on === 'function') {
+      (child.stderr as any).on('data', (chunk: Buffer | string) => {
+        const text = typeof chunk === 'string' ? chunk : decodeOutput(chunk);
+        if (!text) return;
         if (stderrText.length >= 4000) return;
-        stderrText += chunk;
+        stderrText += text;
       });
     }
 
@@ -818,11 +776,7 @@ function normalizeAssistantBootstrapMode(value: unknown): AssistantBootstrapMode
 }
 
 function getPreferredNpmCommandForBootstrap(): string {
-  if (process.platform !== 'win32') {
-    return 'npm';
-  }
-
-  return isCommandAvailable('npm.cmd') ? 'npm.cmd' : 'npm';
+  return getPreferredNpmCommand();
 }
 
 function buildAssistantBootstrapCommand(mode: AssistantBootstrapMode): string {
@@ -834,111 +788,39 @@ function buildAssistantBootstrapCommand(mode: AssistantBootstrapMode): string {
   return hints.start;
 }
 
-function runCommandInBackground(command: string, cwd: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    logAssistantRuntime('info', '后台执行命令', { command, cwd, platform: process.platform });
-    const child = process.platform === 'win32'
-      ? spawn('cmd.exe', ['/d', '/s', '/c', command], {
-        cwd,
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      })
-      : spawn('sh', ['-lc', command], {
-        cwd,
-        detached: true,
-        stdio: 'ignore',
-      });
+async function runAssistantBootstrap(mode: AssistantBootstrapMode, cwd: string): Promise<void> {
+  const startCommand = getAssistantHealthHints().start;
 
-    if (typeof (child as any)?.once !== 'function') {
-      child.unref();
-      logAssistantRuntime('warn', '子进程对象不支持事件监听，按已触发处理', { command, cwd });
-      resolve();
-      return;
+  if (mode === 'install_global') {
+    const npmCommand = getPreferredNpmCommandForBootstrap();
+    const installResult = await runCommand({
+      command: npmCommand,
+      args: ['install', '-g', '@axhub/genie'],
+      cwd,
+      capture: true,
+      timeoutMs: 180_000,
+    });
+
+    if (installResult.code !== 0) {
+      throw new Error(installResult.stderr || installResult.stdout || 'npm install -g @axhub/genie failed');
     }
+  }
 
-    let settled = false;
-    let stderrText = '';
-    if (child.stderr && typeof (child.stderr as any).setEncoding === 'function' && typeof (child.stderr as any).on === 'function') {
-      (child.stderr as any).setEncoding('utf8');
-      (child.stderr as any).on('data', (chunk: string) => {
-        if (typeof chunk !== 'string') return;
-        if (stderrText.length >= 4000) return;
-        stderrText += chunk;
-      });
-    }
-
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      if (typeof child.unref === 'function') {
-        child.unref();
-      }
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    };
-
-    child.once('error', (error) => {
-      logAssistantRuntime('error', '后台命令触发失败', {
-        command,
-        cwd,
-        error: (error as Error)?.message || 'unknown error',
-      });
-      finish(error as Error);
-    });
-    child.once('spawn', () => {
-      logAssistantRuntime('info', '后台命令已触发', {
-        command,
-        cwd,
-        pid: typeof child.pid === 'number' ? child.pid : null,
-      });
-      setTimeout(() => finish(), 150);
-    });
-    child.once('exit', (code, signal) => {
-      const stderrSnippet = stderrText.trim().slice(0, 500);
-      const exitMeta = {
-        command,
-        cwd,
-        code,
-        signal,
-        stderr: stderrSnippet || null,
-      };
-
-      if (typeof code === 'number' && code !== 0) {
-        logAssistantRuntime('error', '后台命令异常退出', exitMeta);
-        finish(new Error(`命令退出 code=${code}${stderrSnippet ? ` stderr=${stderrSnippet}` : ''}`));
-        return;
-      }
-
-      logAssistantRuntime('warn', '后台命令提前退出', exitMeta);
-      finish();
-    });
-    setTimeout(() => finish(), 500);
-  });
+  await runExecutableCommandInBackground(startCommand, [], cwd);
 }
 
 function isCommandAvailable(command: string, args: string[] = ['--version']): boolean {
   try {
-    const execution = spawnSyncFirstAvailable(command, args, {
-      encoding: 'utf8',
-      timeout: COMMAND_AVAILABILITY_TIMEOUT_MS,
-    });
-
-    if (!execution) {
+    if (!commandExists(command)) {
       return false;
     }
 
-    const result = execution.result;
-
-    if (result.error) {
-      const errCode = (result.error as NodeJS.ErrnoException).code;
-      return errCode !== 'ENOENT';
-    }
-
-    return result.status === 0;
+    const execution = runCommandSync({
+      command,
+      args,
+      timeoutMs: COMMAND_AVAILABILITY_TIMEOUT_MS,
+    });
+    return execution.status === 0;
   } catch {
     return false;
   }
@@ -1391,8 +1273,7 @@ export function configApiPlugin(): Plugin {
                 return;
               }
 
-              const command = buildAssistantBootstrapCommand(mode);
-              await runCommandInBackground(command, projectRoot);
+              await runAssistantBootstrap(mode, projectRoot);
 
               const config = readSystemConfig(configPath);
               const runtime = await resolveAssistantRuntime(config, projectRoot);
@@ -1570,16 +1451,12 @@ export function configApiPlugin(): Plugin {
                   || resolveWindowsExecutableFromRegistry(executableNameCandidates);
 
                 if (executablePath) {
-                  const useWindowsCmdWrapper = /\.(cmd|bat)$/i.test(executablePath);
-                  const spawnCommand = useWindowsCmdWrapper ? 'cmd.exe' : executablePath;
-                  const spawnArgs = useWindowsCmdWrapper
-                    ? ['/d', '/s', '/c', buildWindowsCommandLine(executablePath, [absoluteTargetPath])]
-                    : [absoluteTargetPath];
+                  const spawnSpec = getSpawnCommandSpec(executablePath, [absoluteTargetPath], process.platform);
 
-                  const child = spawn(spawnCommand, spawnArgs, {
+                  const child = spawn(spawnSpec.command, spawnSpec.args, {
                     detached: true,
                     stdio: 'ignore',
-                    windowsHide: true,
+                    windowsHide: spawnSpec.windowsHide,
                     shell: false,
                   });
 
